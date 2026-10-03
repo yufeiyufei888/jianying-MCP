@@ -1,0 +1,6 @@
+interface:
+  display_name: "Jianying Local"
+  short_description: "Copy-only Jianying drafts, local edits, music and subtitles"
+  default_prompt: "Use $jianying-local to inspect the latest saved draft, preview explicit local changes, and create a verified independent copy without changing original media."
+policy:
+  allow_implicit_invocation: true

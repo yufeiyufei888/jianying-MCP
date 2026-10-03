@@ -1,0 +1,29 @@
+name: Windows Python CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate public whitelist
+        run: python -B -X utf8 scripts/validate_release.py
+      - name: Unit and regression tests (explicit dependency skips)
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: python -B -X utf8 -m unittest discover -s scripts/tests -v
+      - name: Install pinned official SDK in disposable CI runner
+        run: python -m pip install --disable-pip-version-check -r requirements-mcp.txt
+      - name: Actual MCP handshake and read-only synthetic calls
+        run: python -I -B -X utf8 scripts/jianying_local/smoke_readonly.py

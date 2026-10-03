@@ -1,0 +1,2 @@
+# Separate adapter environment only; the stdlib CLI does not need this SDK.
+mcp==1.26.0

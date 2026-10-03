@@ -1,0 +1,13 @@
+{
+  "request_id": "892afad7-8844-45f7-9ec0-107b14ee96ce",
+  "mode": "enrich",
+  "source_draft": "<source-directory-name>",
+  "name": "Vlog-Music-New-Copy",
+  "bgm": [{
+    "path": "<confirmed-local-audio-path>",
+    "start_us": 0, "duration_us": 8000000, "volume": 0.3,
+    "fade_in_us": 500000, "fade_out_us": 700000,
+    "loop": true, "loop_crossfade": true,
+    "ducking": [{"start_us": 2000000, "end_us": 4000000, "volume": 0.08, "attack_us": 300000, "release_us": 400000}]
+  }]
+}

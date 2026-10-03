@@ -1,0 +1,8 @@
+{
+  "drafts_root": "${LOCALAPPDATA}/JianyingPro/User Data/Projects/com.lveditor.draft",
+  "work_root": ".local/work",
+  "skill_root": "${USERPROFILE}/.codex/skills/jianying-editor",
+  "app_root": "${LOCALAPPDATA}/JianyingPro/Apps/11.5.0.14471",
+  "codex_config": "${USERPROFILE}/.codex/config.toml",
+  "codec_root": ".tools/jianying-codec/v0.1.1"
+}

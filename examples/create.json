@@ -1,0 +1,9 @@
+{
+  "request_id": "5bd10c41-19fd-4ff9-9f33-9c8bcd7b24f7",
+  "mode": "create",
+  "name": "Reviewed-Vlog-New-Copy",
+  "canvas": {"width": 1920, "height": 1080, "fps": 30},
+  "clips": [
+    {"path": "<absolute-original-video-path>", "in_us": 2000000, "out_us": 11000000, "volume": 1}
+  ]
+}

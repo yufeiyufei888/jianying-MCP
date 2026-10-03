@@ -1,0 +1,11 @@
+jianying-MCP
+Copyright 2026 yufeiyufei888
+
+Self-authored scripts, tests, documentation and the jianying-local calling
+skill are licensed under Apache-2.0. This is an independent community tool,
+not an official Jianying/CapCut interface and not endorsed by those owners.
+
+External dependencies keep their own licenses. No Jianying application,
+DLL, third-party backend source, codec binary, video, music, real draft,
+private subtitle, or local acceptance record is distributed here.
+See THIRD_PARTY.md for provenance and compatibility requirements.

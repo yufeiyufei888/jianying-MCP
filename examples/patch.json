@@ -1,0 +1,13 @@
+{
+  "request_id": "e62b6dfd-e9a6-4d2c-95d9-1c678d6e5363",
+  "mode": "patch",
+  "source_draft": "<source-directory-name>",
+  "name": "Vlog-Local-Fix-New-Copy",
+  "operations": [{
+    "type": "insert_clip", "track_id": "<actual-main-track-id>",
+    "anchor_segment_id": "<actual-anchor-id>", "position": "after",
+    "companion_tracks": {"<actual-other-track-id>": "follow"},
+    "clip": {"path": "<absolute-complete-original-video>", "in_us": 3000000, "out_us": 10000000}
+  }],
+  "subtitles": [{"path": "<absolute-source-srt-path>", "basis": "source", "media_path": "<absolute-complete-original-video>"}]
+}
