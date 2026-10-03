@@ -49,6 +49,7 @@
     "scripts/tests/test_jianying_mcp_setup.py",
     "scripts/tests/test_jianying_reference_fixes.py",
     "scripts/tests/test_jianying_saved_rules.py",
+    "scripts/tests/test_process_snapshot.py",
     "scripts/tests/test_public_configuration.py",
     "scripts/tests/test_public_release.py",
     "scripts/validate_release.py",

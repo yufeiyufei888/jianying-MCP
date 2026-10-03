@@ -205,16 +205,47 @@ def load_settings(config_path=None, *, canary=False, **overrides):
 
 def app_pids() -> list[int]:
     require(os.name == "nt", "unsupported_host", "Native writes require Windows")
-    result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
-                             "@(Get-Process -Name JianyingPro -ErrorAction SilentlyContinue | ForEach-Object { $_.Id }) | ConvertTo-Json -Compress"],
-                            capture_output=True, text=True, timeout=15,
-                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    require(result.returncode == 0, "process_check_failed", "Cannot establish whether Jianying is closed")
-    text = result.stdout.strip()
-    if not text:
-        return []
-    value = json.loads(text)
-    return value if isinstance(value, list) else [value]
+    # A system process snapshot avoids PowerShell cold-start latency and starts
+    # no shell/window. Any API failure remains fail-closed, never an empty list.
+    import ctypes
+    from ctypes import wintypes
+
+    class ProcessEntry(ctypes.Structure):
+        _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD),
+                    ("th32ProcessID", wintypes.DWORD), ("th32DefaultHeapID", ctypes.c_size_t),
+                    ("th32ModuleID", wintypes.DWORD), ("cntThreads", wintypes.DWORD),
+                    ("th32ParentProcessID", wintypes.DWORD), ("pcPriClassBase", wintypes.LONG),
+                    ("dwFlags", wintypes.DWORD), ("szExeFile", wintypes.WCHAR * 260)]
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+    kernel.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    for name in ("Process32FirstW", "Process32NextW"):
+        function = getattr(kernel, name)
+        function.argtypes = [wintypes.HANDLE, ctypes.POINTER(ProcessEntry)]
+        function.restype = wintypes.BOOL
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    handle = kernel.CreateToolhelp32Snapshot(0x00000002, 0)  # TH32CS_SNAPPROCESS
+    require(handle not in (None, 0, ctypes.c_void_p(-1).value), "process_check_failed", "Cannot create process snapshot")
+    entry = ProcessEntry()
+    entry.dwSize = ctypes.sizeof(entry)
+    found, count = set(), 0
+    try:
+        ctypes.set_last_error(0)
+        valid = kernel.Process32FirstW(handle, ctypes.byref(entry))
+        while valid:
+            count += 1
+            require(count <= 100000, "process_check_failed", "Unexpected process snapshot size")
+            if entry.szExeFile.casefold() == "jianyingpro.exe":
+                require(entry.th32ProcessID > 0, "process_check_failed", "Invalid editor process identity")
+                found.add(int(entry.th32ProcessID))
+            ctypes.set_last_error(0)
+            valid = kernel.Process32NextW(handle, ctypes.byref(entry))
+        require(ctypes.get_last_error() == 18, "process_check_failed", "Process enumeration failed before normal end")  # ERROR_NO_MORE_FILES
+    finally:
+        require(kernel.CloseHandle(handle), "process_check_failed", "Cannot close owned process snapshot")
+    return sorted(found)
 
 
 def require_closed():
