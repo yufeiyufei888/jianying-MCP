@@ -38,8 +38,15 @@ class PipelineTests(unittest.TestCase):
         self.native = self.root / "native"
         self.native.mkdir()
         self.work = self.root / "jobs_root"
-        self.vendor = Settings().skill_root
+        self.vendor = self.root / "synthetic-backend"
         self.settings = Settings(self.native, self.work, self.vendor, True)
+        # Mocked payload builders must not accidentally depend on a real backend.
+        # These tiny self-authored templates are temporary test data, not vendor code.
+        assets = self.settings.vendor / "assets"
+        assets.mkdir(parents=True)
+        (assets / "draft_meta_info.json").write_bytes(b"{}")
+        (assets / "draft_settings_template").write_bytes(b"[General]\n")
+        (assets / "key_value_template.json").write_bytes(b"{}")
         self.media = self.root / "original.mp4"
         self.media.write_bytes(b"fixture-video-not-decoded")
         self.music = self.root / "music.wav"
