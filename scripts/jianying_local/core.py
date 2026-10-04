@@ -62,10 +62,12 @@ def files_of(folder):
             "Nested draft assets/cache/timeline layout is unsupported; no copying or guessing")
     names = {p.name for p in entries}
     content = names & CONTENT_NAMES
-    require(len(content) == 1 and names - CONTENT_NAMES <= AUX_NAMES and
+    require(len(content) in {1, 2} and names - CONTENT_NAMES <= AUX_NAMES and
             "draft_meta_info.json" in names, "unsupported_structure",
-            "Only a flat, single-content-file native draft is supported")
-    return entries, next(iter(content))
+            "Only a known flat layout with one content file or an identical plain mirror is supported")
+    if len(content) == 2:
+        formats.flat_format({name: small(folder / name) for name in content})
+    return entries, "draft_content.json" if "draft_content.json" in content else "draft_info.json"
 
 
 def walk_paths(value, trail=()):
@@ -210,7 +212,11 @@ def read_source(settings, name, allow_missing=False):
                 "unsupported_structure", "Draft saved identity/duration conflicts")
         require(safe_path(meta.get("draft_fold_path", "")) == folder and safe_path(meta.get("draft_root_path", "")) == settings.drafts_root,
                 "unsupported_structure", "Draft metadata points to another folder/root")
-        media, deps, missing = deps_io.inventory(doc, meta, folder, settings, allow_missing=allow_missing, probe_fn=probe)
+        media, deps, missing = deps_io.inventory(doc, meta, folder, settings, allow_missing=allow_missing,
+                                               probe_fn=probe, copied_resources=source["copy_resources"],
+                                               allow_missing_generated_cover=source["format"] in formats.FLAT_FORMATS)
+        if source["format"] in formats.FLAT_FORMATS:
+            source["ignored"] += deps_io.missing_generated_cover(meta, folder)
         if not missing:
             validate_doc(doc, media)
         source.update(media=media, dependencies=deps, missing=missing)
@@ -219,6 +225,10 @@ def read_source(settings, name, allow_missing=False):
     folder = draft_path(settings, name)
     paths, content_name = files_of(folder)
     raw = {p.name: small(p) for p in paths}
+    flat = formats.flat_format(raw)
+    stamps = [file_stamp(p, hash_bytes=True) for p in paths]
+    require(all(s["sha256"] == digest(raw[Path(s["path"]).name]) for s in stamps),
+            "stale_input", "Flat metadata changed while it was read")
     doc = decode(raw[content_name])
     meta = decode(raw["draft_meta_info.json"])
     validate_doc(doc)
@@ -233,12 +243,16 @@ def read_source(settings, name, allow_missing=False):
         text = raw["draft_settings"].decode("utf-8-sig")
         require(text.startswith("[General]") and ":\\" not in text and ":/" not in text,
                 "unsupported_structure", "Unknown draft_settings format/dependency")
-    media, dependencies = dependency_inventory(doc, meta, folder)
+    # New audio/subtitle/transition resources must be readable before AND after
+    # native saving. Use the same strict dependency allowlist on flat layouts;
+    # unknown fields and unbudgeted internal resources remain unsupported.
+    media, dependencies, missing = deps_io.inventory(doc, meta, folder, settings, probe_fn=probe,
+                                                    allow_missing_generated_cover=True)
     validate_doc(doc, media)
     result = {"folder": folder, "content_name": content_name, "raw": raw, "doc": doc, "meta": meta,
-              "files": [file_stamp(p, hash_bytes=True) for p in paths], "media": media, "dependencies": dependencies,
-              "format": "flat-360000", "project": None, "timeline_id": None, "encoded": {}, "copy_resources": {},
-              "resource_copy_bytes": 0, "ignored": [], "format_identity": None, "missing": [],
+              "files": stamps, "media": media, "dependencies": dependencies,
+              "format": flat, "project": None, "timeline_id": None, "encoded": {}, "copy_resources": {},
+              "resource_copy_bytes": 0, "ignored": deps_io.missing_generated_cover(meta, folder), "format_identity": None, "missing": [],
               "source_tree": formats.tree(folder)}
     result["fingerprint"] = formats.fingerprint(result)
     return result
@@ -384,11 +398,14 @@ def accepted(settings):
     return value
 
 
-def require_acceptance(settings):
+def require_acceptance(settings, draft_format=None):
     if not settings.canary:
         evidence = accepted(settings)
         require(evidence is not None, "native_acceptance_required", "All five phase2 native checks must pass before production writes/MCP registration")
         require(evidence.get("app_version") == app_version(settings), "native_acceptance_required", "Jianying version changed; native acceptance must be repeated")
+        if draft_format == "flat-mirrored-360000":
+            require(evidence.get("mirrored_plaintext", {}).get("native_validation") == "passed",
+                    "native_acceptance_required", "The identical dual-file copy also needs a current native save/reopen check")
 
 
 def app_version(settings=None):
@@ -588,13 +605,14 @@ def plan_draft(settings, request):
         if base: prove_boundary(base, doc, delta)
         target = settings.drafts_root / normalized["name"]
         meta = new_meta(settings, doc, target, source_meta)
-        # Internal covers are budgeted/stamped by the layout adapter. During
-        # preview they still live in the source, not the uncreated target.
+        # Existing internal covers are budgeted/stamped by the layout adapter.
+        # A missing flat catalog-thumbnail placeholder is not a render asset;
+        # preserve its metadata and list it, rather than inventing a cover file.
         dependency_meta = copy.deepcopy(meta)
-        if source and dependency_meta.get("draft_cover") in {"draft_cover.jpg", "draft_cover.png"}:
-            dependency_meta["draft_cover"] = str(source["folder"] / dependency_meta["draft_cover"])
         media, deps, missing = deps_io.inventory(doc, dependency_meta, source["folder"] if source else target,
-                                               settings, probe_fn=probe)
+                                               settings, probe_fn=probe,
+                                               copied_resources=source["copy_resources"] if source else {},
+                                               allow_missing_generated_cover=bool(source and source["format"] in formats.FLAT_FORMATS))
         stats = validate_doc(doc, media)
         if source:
             payload, content_name = formats.payload(source, doc, meta, target, settings)
@@ -758,9 +776,14 @@ def validate_payload(plan, settings, folder):
                     if row.get("file_Path") and safe_path(row["file_Path"]) == Path(update["new_path"]):
                         row["file_Path"] = old_row.get("file_Path")
         require(restored_meta == original_meta, "boundary_violation", "Unrequested metadata edit")
-        if plan["format"] == "flat-360000":
+        if plan["format"] in formats.FLAT_FORMATS:
+            changed_contents = {plan["content_name"]}
+            if plan["format"] == "flat-mirrored-360000":
+                require(small(folder / "draft_info.json") == small(folder / "draft_content.json"),
+                        "payload_changed", "Output flat content mirror disagrees")
+                changed_contents = CONTENT_NAMES
             for name in plan["output_sha256"]:
-                if name not in {plan["content_name"], "draft_meta_info.json"}:
+                if name not in changed_contents | {"draft_meta_info.json"}:
                     require(small(snapshot / name) == small(folder / name), "boundary_violation", "Auxiliary configuration changed")
     return stats, doc, meta
 
@@ -808,7 +831,7 @@ def apply_plan(settings, plan_id, expected_plan_sha256):
                 return recover_publication(settings, plan, receipt, job)
             raise ToolError("previous_failure", f"Previous attempt {receipt.get('status')}; examine receipt/backups, do not overwrite")
         require_closed()
-        require_acceptance(settings)
+        require_acceptance(settings, plan.get("format"))
         check_inputs(plan, settings)
         no_collision(settings, plan["request"]["name"], plan["draft_id"])
         stats, doc, meta = validate_payload(plan, settings, job / "payload")
@@ -878,7 +901,7 @@ def doctor(settings):
             "drafts_root": str(settings.drafts_root), "work_root": str(settings.work_root),
             "native_acceptance": "accepted" if accepted(settings) else "pending", "canary_mode": settings.canary,
             "plan_schema": "jianying-local-plan/2", "codec": codec.status(settings),
-            "formats": ["flat-360000", "nested-single-11.5"],
+            "formats": ["flat-360000", "flat-mirrored-360000", "nested-single-11.5"],
             "production_features": accepted(settings).get("features", {}) if accepted(settings) else {},
             "startup_scan": False, "network": False, "automatic_export": False}
 

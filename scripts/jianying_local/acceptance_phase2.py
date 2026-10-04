@@ -25,7 +25,7 @@ CHECKS = {
 
 
 def record(settings, report):
-    core.obj(report, ("user_confirmation", "checks", "manifest_path"), ("delegated_ui_evidence", "listening_evidence"), label="phase2 native report")
+    core.obj(report, ("user_confirmation", "checks", "manifest_path"), ("delegated_ui_evidence", "listening_evidence", "mirrored_copy_evidence"), label="phase2 native report")
     require(isinstance(report["user_confirmation"], str) and len(report["user_confirmation"].strip()) >= 10,
             "human_report_required", "Use the actual user's explicit confirmation, never a generated acceptance")
     core.obj(report["checks"], CHECKS, label="phase2 manual checks")
@@ -96,6 +96,23 @@ def record(settings, report):
         if row.get("resource_id") == "6724845717472416269":
             resources[row["resource_id"]] = copy.deepcopy(row)
     require(len(saved) == 5, "invalid_manifest", "Five native tests are required")
+    mirrored = None
+    if "mirrored_copy_evidence" in report:
+        ui = report["mirrored_copy_evidence"]
+        core.obj(ui, ("name", "plan_id", "actor", "opened_played_saved_reopened", "observations"), label="dual-file native check")
+        require(ui["actor"] in {"user", "delegated_agent"} and ui["opened_played_saved_reopened"] is True and
+                isinstance(ui["observations"], str) and len(ui["observations"]) >= 20,
+                "native_test_failed", "Record actual dual-file copy observations, not a generated pass")
+        mirror_plan = core.load_plan(settings, ui["plan_id"])
+        require(mirror_plan["code_profile"] == manifest["code_profile"] and mirror_plan["canary"] and
+                mirror_plan["format"] == "flat-mirrored-360000" and mirror_plan["request"]["name"] == ui["name"],
+                "stale_test", "Dual-file native test must use this exact tool version and copy plan")
+        core.validate_payload(mirror_plan, settings, core.job_path(settings, ui["plan_id"]) / "payload")
+        readback = core.verify_draft(settings, ui["name"], ui["plan_id"], validation="after_save")
+        actual = core.read_source(settings, ui["name"])
+        require(actual["format"] == "nested-single-11.5", "native_save_required", "Dual-file copy has not been natively saved")
+        mirrored = {"native_validation": "passed", "ui": ui, "readback": readback,
+                    "fingerprint": actual["fingerprint"], "files": actual["files"]}
     evidence = {"schema": core.SCHEMA, "plan_version": 2, "status": "user_accepted",
                 "code_profile": manifest["code_profile"], "format_identity": manifest["format_identity"],
                 "app_version": manifest["app_version"], "features": {k: True for k in core.REQUIRED_FEATURES},
@@ -105,6 +122,8 @@ def record(settings, report):
                 "test_manifest_path":str(manifest_path),
                 "latest_manual_change_read_back": manual, "recorded_us": time.time_ns() // 1000,
                 "scope": "local pinned single-timeline 11.5 plus legacy plain 360000; no arbitrary codec endpoint"}
+    if mirrored is not None:
+        evidence["mirrored_plaintext"] = mirrored
     path = settings.work_root / "native_acceptance.json"
     if path.exists():
         previous = decode(path.read_bytes())

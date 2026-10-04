@@ -8,6 +8,19 @@ from . import codec
 from .runtime import canonical, check_stamp, decode, digest, file_stamp, require, safe_path
 
 MAX_RESOURCE_BYTES = 20 * 1024 * 1024
+FLAT_FORMATS = frozenset({"flat-360000", "flat-mirrored-360000"})
+
+
+def flat_format(raw):
+    """A second flat content file is valid only as an identical plain mirror."""
+    names = {"draft_info.json", "draft_content.json"} & raw.keys()
+    if len(names) == 2:
+        require(raw["draft_info.json"] == raw["draft_content.json"],
+                "save_state_conflict", "Flat content files differ; no mtime or stale-file fallback")
+        require(isinstance(decode(raw["draft_content.json"]), dict),
+                "unsupported_structure", "Mirrored flat content must be plain JSON")
+        return "flat-mirrored-360000"
+    return "flat-360000"
 ROOT_JSON = {"draft_agency_config.json", "attachment_pc_common.json", "draft_biz_config.json", "draft_virtual_store.json", "attachment_editing.json"}
 TIMELINE_JSON = {"attachment_editing.json", "attachment_pc_common.json"}
 ATTACHMENTS = {"attachment_id_mapping.json", "attachment_pc_timeline.json", "attachment_script_video.json", "attachment_action_scene.json", "coperate_create.json", "attachment_plugin_draft.json"}
@@ -68,16 +81,20 @@ def read_layout(settings, name):
     entries = tree(folder)
     project_path = folder / "Timelines" / "project.json"
     if not project_path.exists():
-        # Legacy behavior remains intentionally strict. A stray new content file
-        # is never resolved by mtime or by falling back to draft_info.
+        # Never resolve differing files by mtime. A verified plain byte-identical
+        # mirror is the only additional flat layout accepted.
         from .core import files_of, small
         paths, content_name = files_of(folder)
         raw = {p.name: small(p) for p in paths}
+        flat = flat_format(raw)
+        stamps = [file_stamp(p, hash_bytes=True) for p in paths]
+        require(all(s["sha256"] == digest(raw[Path(s["path"]).name]) for s in stamps),
+                "stale_input", "Flat metadata changed while it was read")
         check_aux(raw, folder, settings)
         return {"folder": folder, "raw": raw, "doc": decode(raw[content_name]),
                 "meta": decode(raw["draft_meta_info.json"]), "content_name": content_name,
-                "format": "flat-360000", "encoded": {}, "project": None, "timeline_id": None,
-                "source_tree": entries, "files": [file_stamp(p, hash_bytes=True) for p in paths],
+                "format": flat, "encoded": {}, "project": None, "timeline_id": None,
+                "source_tree": entries, "files": stamps,
                 "copy_resources": {}, "resource_copy_bytes": 0, "ignored": [], "format_identity": None}
     from .core import small
     pin = codec.identity(settings)
@@ -172,9 +189,14 @@ def remap_aux(value, old, new, old_folder, target):
 
 
 def payload(source, doc, meta, target, settings):
-    if source["format"] == "flat-360000":
+    if source["format"] in FLAT_FORMATS:
         value = dict(source["raw"])
-        value[source["content_name"]] = canonical(doc)
+        encoded = canonical(doc)
+        value[source["content_name"]] = encoded
+        if source["format"] == "flat-mirrored-360000":
+            require(flat_format(source["raw"]) == source["format"],
+                    "save_state_conflict", "Unverified flat content mirror")
+            value["draft_info.json"] = value["draft_content.json"] = encoded
         value["draft_meta_info.json"] = canonical(meta)
         return value, source["content_name"]
     old, new = source["timeline_id"], doc["id"]

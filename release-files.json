@@ -42,6 +42,7 @@
     "scripts/jianying_local/verification.py",
     "scripts/tests/__init__.py",
     "scripts/tests/fixtures/jianying_11_5_empty_editing_attachment.json",
+    "scripts/tests/test_jianying_flat_dependencies.py",
     "scripts/tests/test_jianying_local.py",
     "scripts/tests/test_jianying_local_backend.py",
     "scripts/tests/test_jianying_local_v2.py",

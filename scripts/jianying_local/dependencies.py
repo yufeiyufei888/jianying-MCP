@@ -5,7 +5,25 @@ from pathlib import Path
 from .runtime import canonical, decode, digest, file_stamp, probe, require, safe_path, write_new
 
 
-def inventory(doc, meta, folder, settings, *, allow_missing=False, persist=True, probe_fn=None):
+GENERATED_COVERS = {"draft_cover.jpg", "draft_cover.png"}
+
+
+def missing_generated_cover(meta, folder):
+    """Only the editor's exact relative catalog-thumbnail placeholder is optional.
+
+    It is not a rendering asset. The containing draft tree is bound to the plan,
+    so appearance of a real cover after preview invalidates the source snapshot.
+    Absolute covers, other filenames and all content-level assets stay strict.
+    """
+    value = meta.get("draft_cover")
+    if not isinstance(value, str) or value not in GENERATED_COVERS:
+        return []
+    path = safe_path(folder / value)
+    return [value] if not path.exists() else []
+
+
+def inventory(doc, meta, folder, settings, *, allow_missing=False, persist=True, probe_fn=None, copied_resources=None,
+              allow_missing_generated_cover=False):
     from .core import walk_paths
     media, deps, missing = {}, [], []
     paths = set()
@@ -33,13 +51,21 @@ def inventory(doc, meta, folder, settings, *, allow_missing=False, persist=True,
                     write_new(evidence, canonical(info))
     text_contents = [decode(m["content"].encode("utf-8")) for m in doc["materials"].get("texts", []) if m.get("content")]
     for data, is_meta in [(doc, False), (meta, True), *((v,False) for v in text_contents)]:
-        for trail, value in walk_paths(data):
+        references = list(walk_paths(data))
+        # walk_paths deliberately does not treat every relative string as a
+        # dependency. Resolve this one known metadata field explicitly.
+        if is_meta and isinstance(meta.get("draft_cover"), str) and meta["draft_cover"] in GENERATED_COVERS:
+            entry = (("draft_cover",), meta["draft_cover"])
+            if entry not in references:
+                references.append(entry)
+        for trail, value in references:
             if is_meta and trail in {("draft_fold_path",), ("draft_root_path",)}:
                 continue
             if trail == ("path",) and value == "":
                 continue
-            if value in {"draft_cover.jpg", "draft_cover.png"} and trail[-1] == "draft_cover":
-                p = folder / value
+            generated_cover = is_meta and trail == ("draft_cover",) and value in GENERATED_COVERS
+            if generated_cover:
+                p = safe_path(folder / value)
             else:
                 p = safe_path(value)
             key = str(p)
@@ -53,12 +79,18 @@ def inventory(doc, meta, folder, settings, *, allow_missing=False, persist=True,
             is_font = (trail[-1] == "font_path" or len(trail) >= 2 and trail[-2:] == ("font", "path")) and p.suffix.lower() in {".ttf", ".ttc", ".otf"}
             is_effect = len(trail) >= 4 and trail[0] == "materials" and trail[1] in {"transitions", "video_effects", "text_effects"} and trail[-1] == "path"
             require(is_cover or is_font or is_effect, "unknown_dependency", f"Unvalidated dependency field: {trail}")
+            if generated_cover and allow_missing_generated_cover and not p.exists():
+                continue  # Listed in preview; only a missing flat catalog thumbnail.
             require(p.exists(), "missing_dependency", f"Missing non-media dependency: {p}")
             if is_cover and p.is_relative_to(folder):
                 require(p.name in {"draft_cover.jpg", "draft_cover.png"}, "unknown_dependency", "Unknown internal cover")
+                relative = p.relative_to(folder).as_posix()
+                require(relative in (copied_resources or {}), "internal_dependency",
+                        "Internal cover has not been bound and budgeted by the layout adapter")
                 continue  # Native layout adapter binds and budgets these bytes.
             require(not p.is_relative_to(settings.drafts_root), "internal_dependency", "Unknown internal dependency")
             if p.is_dir():
+                require(is_effect, "unknown_dependency", "Only validated effect fields may reference directories")
                 values = sorted(p.rglob("*"))
                 require(len(values) <= 2000, "dependency_limit", "External effect dependency tree is too large")
                 for child in values:

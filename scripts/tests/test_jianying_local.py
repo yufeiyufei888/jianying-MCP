@@ -151,6 +151,114 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual("pending",receipt["editor_acceptance"])
         self.assertEqual("passed",core.verify_draft(self.settings,"test-copy",preview["plan_id"])["boundary_validation"])
 
+    def make_mirror(self):
+        source = self.native / "source"
+        (source / "draft_content.json").write_bytes((source / "draft_info.json").read_bytes())
+
+    def test_mirrored_read_inspect_and_all_fingerprints(self):
+        self.make_mirror()
+        source = core.read_source(self.settings, "source")
+        self.assertEqual("flat-mirrored-360000", source["format"])
+        self.assertEqual("draft_content.json", source["content_name"])
+        self.assertEqual(self.doc, source["doc"])
+        self.assertTrue({"draft_info.json", "draft_content.json"} <= {Path(s["path"]).name for s in source["files"]})
+        self.assertEqual("flat-mirrored-360000", core.inspect_draft(self.settings, "source")["format"])
+
+    def test_mirrored_copy_sync_original_track_and_aux_preserved(self):
+        self.make_mirror()
+        before = {p.name: p.read_bytes() for p in (self.native / "source").iterdir()}
+        preview, receipt = self.apply()
+        target = Path(receipt["draft_path"])
+        self.assertEqual((target / "draft_info.json").read_bytes(), (target / "draft_content.json").read_bytes())
+        plan = core.load_plan(self.settings, preview["plan_id"])
+        self.assertEqual("flat-mirrored-360000", plan["format"])
+        output = json.loads((target / "draft_content.json").read_bytes())
+        restored = copy.deepcopy(output["tracks"][0])
+        restored["segments"][0]["extra_material_refs"].remove(plan["delta"]["transitions"][0]["resource"]["id"])
+        self.assertEqual(self.doc["tracks"][0], restored)
+        self.assertEqual(self.doc["unknown_top"], output["unknown_top"])
+        for name, value in before.items():
+            self.assertEqual(value, (self.native / "source" / name).read_bytes())
+        self.assertEqual("passed", core.verify_draft(self.settings, "test-copy", preview["plan_id"])["boundary_validation"])
+
+    def test_mirrored_semantically_equal_but_different_bytes_rejected(self):
+        self.make_mirror()
+        (self.native / "source" / "draft_info.json").write_bytes(json.dumps(self.doc, indent=2).encode())
+        self.error("save_state_conflict", lambda: core.read_source(self.settings, "source"))
+
+    def test_mirrored_differing_contents_rejected_no_mtime_guess(self):
+        self.make_mirror()
+        changed = copy.deepcopy(self.doc)
+        changed["tracks"][0]["segments"][0]["volume"] = .2
+        (self.native / "source" / "draft_content.json").write_bytes(canonical(changed))
+        self.error("save_state_conflict", lambda: core.plan_draft(self.settings, self.request()))
+
+    def test_mirrored_opaque_or_nonobject_rejected_without_codec(self):
+        self.make_mirror()
+        for value, code in ((b"encoded:opaque", "unreadable_json"), (b"[]", "unsupported_structure")):
+            for name in core.CONTENT_NAMES:
+                (self.native / "source" / name).write_bytes(value)
+            with patch.object(core.codec, "unpack", side_effect=AssertionError("No flat decryption fallback")):
+                self.error(code, lambda: core.read_source(self.settings, "source"))
+
+    def test_mirrored_identity_and_dependency_checks_still_required(self):
+        changed = copy.deepcopy(self.doc)
+        changed["id"] = "other"
+        for name in core.CONTENT_NAMES:
+            (self.native / "source" / name).write_bytes(canonical(changed))
+        self.error("unsupported_structure", lambda: core.read_source(self.settings, "source"))
+        changed = copy.deepcopy(self.doc)
+        changed["unrecognized"] = {"cache_path": str(self.music)}
+        for name in core.CONTENT_NAMES:
+            (self.native / "source" / name).write_bytes(canonical(changed))
+        self.error("unknown_dependency", lambda: core.read_source(self.settings, "source"))
+
+    def test_mirrored_allow_missing_diagnostic_uses_same_rules(self):
+        self.make_mirror()
+        self.media.unlink()
+        result = core.read_source(self.settings, "source", allow_missing=True)
+        self.assertEqual("flat-mirrored-360000", result["format"])
+        self.assertEqual(1, len(result["missing"]))
+        (self.native / "source" / "draft_info.json").write_bytes(b"different")
+        self.error("save_state_conflict", lambda: core.read_source(self.settings, "source", allow_missing=True))
+
+    def test_mirrored_either_source_file_change_invalidates_plan(self):
+        self.make_mirror()
+        for name in sorted(core.CONTENT_NAMES):
+            request = self.request()
+            request["name"] = "test-" + uuid.uuid4().hex
+            preview = core.plan_draft(self.settings, request)
+            path = self.native / "source" / name
+            before = path.read_bytes()
+            path.write_bytes(before + b" ")
+            self.error("stale_input", lambda: core.apply_plan(self.settings, preview["plan_id"], preview["plan_sha256"]))
+            path.write_bytes(before)
+            self.assertFalse((self.native / request["name"]).exists())
+
+    def test_mirrored_secondary_output_tampering_rejected(self):
+        self.make_mirror()
+        preview = core.plan_draft(self.settings, self.request())
+        output = core.job_path(self.settings, preview["plan_id"]) / "payload" / "draft_info.json"
+        output.write_bytes(output.read_bytes() + b" ")
+        self.error("payload_changed", lambda: core.apply_plan(self.settings, preview["plan_id"], preview["plan_sha256"]))
+
+    def test_mirrored_duplicate_submission_creates_one_copy(self):
+        self.make_mirror()
+        request = self.request()
+        preview, receipt = self.apply(request)
+        repeated = core.apply_plan(self.settings, preview["plan_id"], preview["plan_sha256"])
+        self.assertTrue(repeated["idempotent_replay"])
+        self.assertEqual(receipt["draft_path"], repeated["draft_path"])
+        self.assertEqual(2, len(json.loads((self.native / "root_meta_info.json").read_bytes())["all_draft_store"]))
+
+    def test_mirrored_production_needs_additional_native_evidence(self):
+        prod = Settings(self.native, self.work, self.vendor, False)
+        evidence = {"app_version": "11.5.0.fixture"}
+        with patch.object(core, "accepted", return_value=evidence):
+            self.error("native_acceptance_required", lambda: core.require_acceptance(prod, "flat-mirrored-360000"))
+            evidence["mirrored_plaintext"] = {"native_validation": "passed"}
+            core.require_acceptance(prod, "flat-mirrored-360000")
+
     def test_original_retime_rejected_by_boundary(self):
         preview,_ = self.apply()
         plan = core.load_plan(self.settings,preview["plan_id"])

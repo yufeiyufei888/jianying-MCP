@@ -43,7 +43,9 @@ py -3.12 -B -X utf8 -m unittest discover -s .\scripts\tests -v
 & '<SDK Python>' -I -B -X utf8 .\scripts\jianying_local\smoke_readonly.py
 ```
 
-All previous 108 tests, including 11 reference regressions, are retained. Additional checks cover startup paths, fresh-install gates, public-file boundaries and SDK transport. Missing external backend causes 14 explicit dependency skips; unavailable Windows symlink privilege causes one additional skip. CI uses synthetic metadata only; it neither launches Jianying nor establishes native write compatibility. See the [compatibility report](docs/compatibility.md).
+All previous 108 tests, including 11 reference regressions, are retained. Additional checks cover startup paths, fresh-install gates, byte-identical flat mirrors, dependencies, saved-state verification, public-file boundaries and SDK transport. Missing external backend causes 14 explicit dependency skips; unavailable Windows symlink privilege causes two additional skips. CI uses synthetic metadata only; it neither launches Jianying nor establishes native write compatibility. See the [compatibility report](docs/compatibility.md).
+
+Flat `draft_info.json` and `draft_content.json` pairs are supported only when their bytes match exactly; both fingerprints are bound and both outputs stay synchronized. Active nested timelines always take precedence. Mirrored production copies need additional local save/reopen evidence. The pinned native audio-material frame ceiling does not relax any clip timing, volume or unknown-field checks. Optional missing thumbnails are limited to the exact relative flat metadata placeholders, never render assets or absolute dependencies. New installations remain unaccepted; no developer acceptance records are distributed.
 
 An explicit [file whitelist](release-files.json) excludes private media, music, real drafts/subtitles/screenshots, logs, receipts, credentials, environments and binaries. File validation, editor acceptance, actual listening and music publishing rights remain separate. A visible waveform is not listening evidence.
 

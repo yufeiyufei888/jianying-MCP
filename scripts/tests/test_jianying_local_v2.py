@@ -207,6 +207,52 @@ class V2Tests(unittest.TestCase):
         d=copy.deepcopy(self.doc);d["unknown_zero"]=0;d["unknown_false"]=False
         self.error("native_semantics_changed",lambda:verification.compare_saved(self.doc,d))
 
+    def audio_rounding_docs(self):
+        expected = copy.deepcopy(self.doc)
+        self.fake_music(expected, [{"path": str(self.music), "start_us": 0, "in_us": 0,
+            "duration_us": 2_000_000, "volume": .15, "fade_in_us": 0, "fade_out_us": 0}], self.settings)
+        expected["materials"]["audios"][0].update(type="extract_music", duration=140_173_063)
+        actual = copy.deepcopy(expected)
+        actual["last_modified_platform"] = {"app_version": "11.5.0"}
+        actual["materials"]["audios"][0]["duration"] = 140_200_000
+        return expected, actual
+
+    def test_native_audio_full_material_up_rounding(self):
+        expected, actual = self.audio_rounding_docs()
+        report = verification.compare_saved(expected, actual)
+        self.assertEqual([{"id": "new_audio_0", "before_us": 140_173_063, "after_us": 140_200_000}],
+                         report["audio_material_duration_frame_alignments"])
+
+    def test_audio_rounding_requires_exact_native_version(self):
+        expected, actual = self.audio_rounding_docs()
+        actual["last_modified_platform"]["app_version"] = "12.0.0"
+        self.error("native_semantics_changed", lambda: verification.compare_saved(expected, actual))
+
+    def test_audio_rounding_not_generic_frame_tolerance(self):
+        for value in (140_173_064, 140_166_666, 140_233_333):
+            expected, actual = self.audio_rounding_docs()
+            actual["materials"]["audios"][0]["duration"] = value
+            self.error("native_semantics_changed", lambda: verification.compare_saved(expected, actual))
+
+    def test_audio_rounding_preserves_material_identity_path_and_type(self):
+        for field, value in (("id", "wrong-id"), ("path", str(self.root / "other.wav")), ("type", "music")):
+            expected, actual = self.audio_rounding_docs()
+            actual["materials"]["audios"][0][field] = value
+            self.error("broken_reference" if field == "id" else "native_semantics_changed",
+                       lambda: verification.compare_saved(expected, actual))
+
+    def test_audio_rounding_does_not_relax_clip_ranges(self):
+        for field in ("source_timerange", "target_timerange"):
+            expected, actual = self.audio_rounding_docs()
+            actual["tracks"][-1]["segments"][0][field]["start"] += 1
+            self.error("native_semantics_changed", lambda: verification.compare_saved(expected, actual))
+
+    def test_audio_rounding_does_not_relax_volume_or_unknown_fields(self):
+        for field, value in (("volume", .14), ("unknown_native_zero", 0)):
+            expected, actual = self.audio_rounding_docs()
+            actual["tracks"][-1]["segments"][0][field] = value
+            self.error("native_semantics_changed", lambda: verification.compare_saved(expected, actual))
+
     def test_changed_format_pin_invalidates_plan(self):
         p=core.plan_draft(self.settings,self.request());plan=core.load_plan(self.settings,p["plan_id"]);plan["format_identity"]={"test_pin":"old"}
         with patch.object(codec,"identity",return_value={"test_pin":"changed"}):
@@ -324,6 +370,23 @@ class NestedTests(V2Tests):
         folder,sub,d,m=self.nested();d["duration"]=9_000_000
         (folder/"draft_content.json").write_bytes(b"encoded:"+canonical(d))
         self.error("save_state_conflict",lambda:core.read_source(self.settings,"source"))
+
+    def test_identical_flat_pair_cannot_override_active_timeline(self):
+        folder, sub, d, m = self.nested()
+        flat = canonical(d)
+        (folder / "draft_info.json").write_bytes(flat)
+        (folder / "draft_content.json").write_bytes(flat)
+        active = copy.deepcopy(d)
+        active["tracks"][0]["segments"][0]["volume"] = .2
+        (sub / "draft_content.json").write_bytes(b"encoded:" + canonical(active))
+        self.error("save_state_conflict", lambda: core.read_source(self.settings, "source"))
+
+    def test_malformed_active_project_cannot_fall_back_to_plain_pair(self):
+        folder, sub, d, m = self.nested()
+        for name in core.CONTENT_NAMES:
+            (folder / name).write_bytes(canonical(d))
+        (folder / "Timelines" / "project.json").write_bytes(b"{}")
+        self.error("unsupported_structure", lambda: core.read_source(self.settings, "source"))
 
     def test_multiple_timelines_rejected(self):
         folder,sub,d,m=self.nested()

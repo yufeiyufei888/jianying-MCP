@@ -91,6 +91,8 @@ def equivalent_effect_paths(left, right, effect_id):
     from .runtime import digest, safe_path
     if left == right:
         return True
+    if not all(isinstance(p, str) and p for p in (left, right)):
+        return False  # No equivalence proof for an absent renderer dependency.
     if not isinstance(effect_id, str) or not effect_id.isdigit():
         return False
     root = Path(os.environ.get("LOCALAPPDATA", "")) / "JianyingPro" / "User Data" / "Cache" / "effect" / effect_id
@@ -188,6 +190,7 @@ def compare_saved(expected, actual, settings=None):
         require(kind in AUTO_RESOURCES and not normalized(simple), "native_semantics_changed", "Unplanned nondefault material appeared after save")
     # All media identities, paths, durations and nondefault effects must agree.
     frame_alignments = []
+    audio_frame_alignments = []
     for key, (kind, e) in er.items():
         if key in removed_text_speeds:
             continue
@@ -216,6 +219,19 @@ def compare_saved(expected, actual, settings=None):
                     abs(e["duration"]-a["duration"]) <= quantum, "native_semantics_changed", "Full material duration changed beyond one frame")
             frame_alignments.append({"id": key, "before_us": e["duration"], "after_us": a["duration"]})
             e["duration"] = a["duration"]
+        if kind == "audios" and e.get("duration") != a.get("duration"):
+            # Observed 11.5 local MP3 import: COMPLETE material length rounds UP
+            # to the project frame grid. Never relax any segment range or gain.
+            fps = expected.get("fps", 30)
+            before, after = e.get("duration"), a.get("duration")
+            require(pinned and e.get("type") == a.get("type") == "extract_music" and
+                    bool(e.get("path")) and normalized({"path": e["path"]}) == normalized({"path": a.get("path")}) and
+                    type(before) is int and type(after) is int and before > 0 and
+                    after == int(math.ceil(before * fps / 1_000_000) * 1_000_000 / fps) and
+                    0 <= after - before <= math.ceil(1_000_000 / fps),
+                    "native_semantics_changed", "Full audio length is not the pinned native frame up-rounding")
+            audio_frame_alignments.append({"id": key, "before_us": before, "after_us": after})
+            e["duration"] = after
         require(normalized(e) == normalized(a), "native_semantics_changed", f"Saved material differs: {kind}/{key}")
     e = copy.deepcopy(expected)
     a = copy.deepcopy(actual)
@@ -268,4 +284,5 @@ def compare_saved(expected, actual, settings=None):
     return {"semantic_validation": "passed", "automatic_default_resources": len(additional),
             "native_removed_default_text_speeds": len(removed_text_speeds),
             "audio_source_microsecond_representations":audio_representations,
+            "audio_material_duration_frame_alignments": audio_frame_alignments,
             "material_duration_frame_alignments": frame_alignments, "unknown_field_policy": "no_generic_discard"}
